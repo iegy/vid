@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>مستعرض الفيديو</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--text:#1b1f27;--muted:#6b7280;--line:#e1e4ea;--accent:#2563eb;--accent-t:#fff;--ok:#15803d;--err:#b91c1c}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--card:#181c25;--text:#e8eaf0;--muted:#9aa3b2;--line:#2a303c;--accent:#4f8cff;--accent-t:#0b1020;--ok:#4ade80;--err:#f87171}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI",Tahoma,"Noto Naskh Arabic",Arial,sans-serif;min-height:100vh}
+.wrap{max-width:960px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.3rem;margin:8px 0 16px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px}
+.bar input{flex:1;min-width:200px;border:1px solid var(--line);background:transparent;color:var(--text);border-radius:8px;padding:12px;font-size:1rem;direction:ltr;text-align:left}
+button{border:0;border-radius:8px;padding:12px 18px;font-size:1rem;cursor:pointer;background:var(--accent);color:var(--accent-t);font-family:inherit}
+button.sec{background:transparent;color:var(--text);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.stage{margin-top:16px;background:#000;border-radius:12px;overflow:hidden;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center}
+.stage video,.stage iframe{width:100%;height:100%;border:0;background:#000}
+.empty{color:#9aa3b2;padding:20px;text-align:center}
+.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.msg{margin-top:10px;font-size:.92rem;color:var(--muted);min-height:1.2em}
+.msg.ok{color:var(--ok)}.msg.err{color:var(--err)}
+.prog{height:6px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:10px;display:none}
+.prog i{display:block;height:100%;width:0;background:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>مستعرض الفيديو</h1>
+  <div class="bar">
+    <input id="url" type="url" placeholder="الصق رابط الفيديو هنا (mp4 / webm / m3u8 / YouTube / Vimeo)">
+    <button id="play">تشغيل</button>
+    <button id="paste" class="sec">لصق</button>
+  </div>
+
+  <div class="stage" id="stage"><div class="empty">الصق رابط فيديو واضغط تشغيل</div></div>
+
+  <div class="actions">
+    <button id="dl" disabled>تحميل الفيديو</button>
+    <button id="open" class="sec" disabled>فتح الرابط في تبويب جديد</button>
+  </div>
+  <div class="prog" id="prog"><i id="bar"></i></div>
+  <div class="msg" id="msg"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const urlEl=$('url'), stage=$('stage'), msg=$('msg'), dl=$('dl'), openBtn=$('open'), prog=$('prog'), bar=$('bar');
+let current=null; // {url, kind}
+
+function say(t,c=''){msg.textContent=t;msg.className='msg '+c}
+
+function detect(u){
+  let x; try{x=new URL(u)}catch{return null}
+  const h=x.hostname.replace(/^www\./,'');
+  if(h==='youtu.be') return {kind:'embed',src:'https://www.youtube.com/embed/'+x.pathname.slice(1)};
+  if(h.endsWith('youtube.com')){
+    const id=x.searchParams.get('v')||(x.pathname.match(/\/(?:embed|shorts|live)\/([^/?]+)/)||[])[1];
+    if(id) return {kind:'embed',src:'https://www.youtube.com/embed/'+id};
+  }
+  if(h==='vimeo.com'){const m=x.pathname.match(/\/(\d+)/); if(m) return {kind:'embed',src:'https://player.vimeo.com/video/'+m[1]}}
+  if(/\.m3u8(\?|$)/i.test(u)) return {kind:'hls',src:u};
+  return {kind:'file',src:u};
+}
+
+function loadHls(cb){
+  if(window.Hls) return cb();
+  const s=document.createElement('script');
+  s.src='https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js';
+  s.onload=cb; s.onerror=()=>say('تعذر تحميل مشغل HLS','err');
+  document.head.appendChild(s);
+}
+
+function play(){
+  const u=urlEl.value.trim();
+  if(!u) return say('اكتب الرابط الأول','err');
+  const d=detect(u);
+  if(!d) return say('الرابط غير صالح','err');
+  stage.innerHTML=''; prog.style.display='none'; say('');
+  current={url:u,kind:d.kind};
+  openBtn.disabled=false;
+  history.replaceState(null,'','#'+encodeURIComponent(u));
+
+  if(d.kind==='embed'){
+    const f=document.createElement('iframe');
+    f.src=d.src; f.allowFullscreen=true;
+    f.allow='accelerometer; autoplay; encrypted-media; picture-in-picture; fullscreen';
+    stage.appendChild(f);
+    dl.disabled=true;
+    say('الفيديو ده من منصة (YouTube/Vimeo) — التشغيل متاح لكن التحميل المباشر غير متاح من هنا.');
+    return;
+  }
+
+  const v=document.createElement('video');
+  v.controls=true; v.autoplay=true; v.playsInline=true;
+  v.onerror=()=>say('تعذر تشغيل الفيديو. تأكد إن الرابط مباشر لملف فيديو وإن الموقع يسمح بالتشغيل.','err');
+  stage.appendChild(v);
+
+  if(d.kind==='hls'){
+    dl.disabled=true;
+    if(v.canPlayType('application/vnd.apple.mpegurl')) v.src=d.src;
+    else loadHls(()=>{ if(Hls.isSupported()){const h=new Hls();h.loadSource(d.src);h.attachMedia(v)} else say('المتصفح لا يدعم HLS','err') });
+    say('ده بث HLS (m3u8) — التشغيل متاح، والتحميل كملف واحد غير مدعوم.');
+  } else {
+    v.src=d.src; dl.disabled=false;
+  }
+}
+
+function fileName(u){
+  try{const n=decodeURIComponent(new URL(u).pathname.split('/').pop()); return n&&/\.\w{2,5}$/.test(n)?n:'video.mp4'}catch{return 'video.mp4'}
+}
+
+function saveBlob(blob,name){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob); a.download=name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),10000);
+}
+
+async function download(){
+  if(!current||current.kind!=='file') return;
+  const name=fileName(current.url);
+  dl.disabled=true; prog.style.display='block'; bar.style.width='0'; say('جاري التحميل...');
+  try{
+    const r=await fetch(current.url);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const total=+r.headers.get('content-length')||0;
+    const reader=r.body.getReader(); const chunks=[]; let got=0;
+    for(;;){
+      const {done,value}=await reader.read(); if(done) break;
+      chunks.push(value); got+=value.length;
+      if(total){bar.style.width=(got/total*100)+'%'; say('جاري التحميل... '+Math.round(got/total*100)+'%')}
+      else say('جاري التحميل... '+(got/1048576).toFixed(1)+' MB');
+    }
+    saveBlob(new Blob(chunks,{type:r.headers.get('content-type')||'video/mp4'}),name);
+    bar.style.width='100%'; say('تم التحميل ✔','ok');
+  }catch(e){
+    // الموقع المصدر غالباً لا يسمح بالتحميل عبر JavaScript (CORS) — نستخدم الطريقة المباشرة
+    const a=document.createElement('a');
+    a.href=current.url; a.download=name; a.target='_blank'; a.rel='noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+    say('الموقع المصدر لا يسمح بالتحميل من داخل الصفحة، تم تمرير الرابط للمتصفح. لو بدأ التشغيل بدل التحميل: كليك يمين على الفيديو ← حفظ باسم.','err');
+  }finally{dl.disabled=false; setTimeout(()=>prog.style.display='none',1500)}
+}
+
+$('play').onclick=play;
+urlEl.addEventListener('keydown',e=>{if(e.key==='Enter')play()});
+dl.onclick=download;
+openBtn.onclick=()=>current&&window.open(current.url,'_blank','noopener');
+$('paste').onclick=async()=>{try{urlEl.value=await navigator.clipboard.readText();play()}catch{say('المتصفح منع اللصق التلقائي، الصق يدوياً','err')}};
+
+if(location.hash.length>1){urlEl.value=decodeURIComponent(location.hash.slice(1));play()}
+</script>
+</body>
+</html>
